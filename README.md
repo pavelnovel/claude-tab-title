@@ -1,47 +1,93 @@
 # claude-tab-title
 
-Dynamic tab titles for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) in [Ghostty](https://ghostty.org/).
+Dynamic tab titles for [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 
-Uses local [Ollama](https://ollama.com) to summarize your coding session into a short label like **"fixing auth bugs · myproject"** and keeps it as the tab title — even though Claude Code normally overwrites it.
-
-![demo](https://img.shields.io/badge/status-works-brightgreen)
+Uses a local LLM to summarize your coding session into a short label like **"fixing auth bugs · myproject"** and keeps it as the tab title.
 
 ## How it works
 
-1. Every time you send a prompt, the hook logs it and asks Ollama (`llama3.2`) for a 2-4 word summary
+1. Every time you send a prompt, the hook logs it and asks your local LLM for a 2-4 word summary
 2. A background watcher re-applies the title every 2 seconds so Claude Code can't overwrite it
 3. When you switch topics mid-session, the title updates on your next prompt
 
 ## Requirements
 
-- [Ollama](https://ollama.com) running locally with `llama3.2` pulled
-- `jq` and `curl` (likely already installed)
-- Ghostty terminal (uses standard OSC escape sequences, may work with other terminals)
+- A local LLM server with an OpenAI-compatible API (any of these work):
+  - [Ollama](https://ollama.com) (default, `ollama pull llama3.2`)
+  - [LM Studio](https://lmstudio.ai)
+  - [llamafile](https://github.com/Mozilla-Ocho/llamafile)
+- `jq` and `curl`
+- A terminal that supports OSC title sequences (Ghostty, iTerm2, kitty, etc.)
 
-## Install
+## Setup
+
+Copy the script somewhere on your PATH:
 
 ```bash
-git clone https://github.com/pavelnovel/claude-tab-title.git
-cd claude-tab-title
-./install.sh
+cp bin/claude-tab-title ~/.local/bin/
+chmod +x ~/.local/bin/claude-tab-title
 ```
 
-Then start a new Claude Code session. Send a couple of prompts and the tab title will update within a few seconds.
+Add these hooks to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "claude-tab-title start" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "claude-tab-title prompt" }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "claude-tab-title stop" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+## Configuration
+
+Set environment variables to use a different LLM backend:
+
+| Variable | Default | Description |
+|---|---|---|
+| `CLAUDE_TAB_TITLE_API_URL` | `http://localhost:11434/v1/chat/completions` | OpenAI-compatible chat completions endpoint |
+| `CLAUDE_TAB_TITLE_MODEL` | `llama3.2` | Model name |
+
+### Examples
+
+**LM Studio** (default port 1234):
+```bash
+export CLAUDE_TAB_TITLE_API_URL=http://localhost:1234/v1/chat/completions
+export CLAUDE_TAB_TITLE_MODEL=your-model-name
+```
+
+**Ollama** (default, no config needed):
+```bash
+ollama pull llama3.2
+# just works
+```
 
 ## Uninstall
 
+Remove the script and clean up any leftover temp files:
+
 ```bash
-cd claude-tab-title
-./uninstall.sh
+rm ~/.local/bin/claude-tab-title
+rm -f /tmp/claude-tab-*.log /tmp/claude-tab-label-*.txt /tmp/claude-tab-watcher-*.pid
 ```
 
-## What it installs
-
-- `~/.local/bin/claude-tab-title.sh` — prompt logger + Ollama summarizer
-- `~/.local/bin/claude-tab-title-reapply.sh` — background title watcher
-- Hooks in `~/.claude/settings.json` for `SessionStart`, `UserPromptSubmit`, and `SessionEnd`
-
-Temp files (cleaned up automatically per session):
-- `/tmp/claude-tab-<pid>.log` — session prompt log
-- `/tmp/claude-tab-label-<pid>.txt` — cached title
-- `/tmp/claude-tab-watcher-<pid>.pid` — watcher process ID
+Remove the three hook entries from `~/.claude/settings.json`.

@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# claude-tab-title — dynamic tab titles for Claude Code
+#
+# Summarizes your coding session into a short label using a local LLM
+# and keeps it as the terminal tab title.
+#
+# Commands:
+#   prompt  — log prompt and update title (UserPromptSubmit hook)
+#   start   — start background title watcher (SessionStart hook)
+#   stop    — stop watcher and clean up (SessionEnd hook)
+#
+# Config (env vars):
+#   CLAUDE_TAB_TITLE_API_URL  default: http://localhost:11434/v1/chat/completions
+#   CLAUDE_TAB_TITLE_MODEL    default: llama3.2
+
+API_URL="${CLAUDE_TAB_TITLE_API_URL:-http://localhost:11434/v1/chat/completions}"
+MODEL="${CLAUDE_TAB_TITLE_MODEL:-llama3.2}"
+
+SESSION_PID="$PPID"
+SESSION_LOG="/tmp/claude-tab-${SESSION_PID}.log"
+LABEL_FILE="/tmp/claude-tab-label-${SESSION_PID}.txt"
+PID_FILE="/tmp/claude-tab-watcher-${SESSION_PID}.pid"
+DIR="${PWD##*/}"
+
+# Drain stdin (hooks pipe JSON in, we need to read it or ignore it)
+read_stdin() { cat > /dev/null 2>/dev/null || true; }
+
+resolve_tty() {
+  local tty_name
+  tty_name=$(ps -o tty= -p "$SESSION_PID" 2>/dev/null | tr -d ' ')
+  if [ -n "${tty_name:-}" ] && [ "$tty_name" != "??" ] && [ -e "/dev/$tty_name" ]; then
+    echo "/dev/$tty_name"
+  elif [ -e /dev/tty ]; then
+    echo "/dev/tty"
+  else
+    echo ""
+  fi
+}
+
+set_title() {
+  local title="$1" tty="$2"
+  [ -n "$tty" ] && printf '\e]0;%s\a' "$title" > "$tty" 2>/dev/null || true
+}
+
+# --- prompt: log user prompt and ask LLM for a summary ---
+cmd_prompt() {
+  INPUT=$(cat)
+
+  TEXT=$(printf '%s' "$INPUT" | jq -r '
+    .prompt // .user_prompt // .message // .content // empty
+  ' 2>/dev/null | head -c 500) || true
+
+  [ -z "${TEXT:-}" ] && exit 0
+
+  echo "$TEXT" >> "$SESSION_LOG"
+
+  # Trim log to last 30 lines once past 50
+  if [ "$(wc -l < "$SESSION_LOG" 2>/dev/null)" -gt 50 ]; then
+    tail -30 "$SESSION_LOG" > "${SESSION_LOG}.tmp"
+    mv "${SESSION_LOG}.tmp" "$SESSION_LOG"
+  fi
+
+  MY_TTY=$(resolve_tty)
+
+  # Background the LLM call so the hook returns fast
+  (
+    CONTEXT=$(cat "$SESSION_LOG")
+
+    LABEL=$(curl -sf --max-time 5 "$API_URL" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -n \
+        --arg model "$MODEL" \
+        --arg context "$CONTEXT" \
+        '{
+          model: $model,
+          messages: [
+            {
+              role: "system",
+              content: "Summarize this coding session in 2-4 words. Terse, no punctuation, no quotes. Examples: fixing auth bugs, API migration, new dashboard UI, refactoring tests"
+            },
+            {
+              role: "user",
+              content: $context
+            }
+          ],
+          max_tokens: 20
+        }')" \
+      | jq -r '.choices[0].message.content // empty' \
+      | head -1 \
+      | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+      | cut -c1-30) || true
+
+    if [ -n "${LABEL:-}" ]; then
+      TITLE="${LABEL} · ${DIR}"
+      printf '%s' "$TITLE" > "$LABEL_FILE"
+      set_title "$TITLE" "$MY_TTY"
+    fi
+  ) &
+
+  exit 0
+}
+
+# --- start: begin background watcher that re-applies title every 2s ---
+cmd_start() {
+  read_stdin
+  : > "$SESSION_LOG" 2>/dev/null || true
+
+  MY_TTY=$(resolve_tty)
+  [ -z "$MY_TTY" ] && exit 0
+
+  # Kill any existing watcher for this session
+  [ -f "$PID_FILE" ] && kill "$(cat "$PID_FILE")" 2>/dev/null || true
+
+  (
+    while true; do
+      sleep 2
+      [ -f "$LABEL_FILE" ] || continue
+      TITLE=$(cat "$LABEL_FILE" 2>/dev/null) || continue
+      [ -n "${TITLE:-}" ] || continue
+      set_title "$TITLE" "$MY_TTY"
+    done
+  ) </dev/null >/dev/null 2>&1 &
+  disown
+  echo $! > "$PID_FILE"
+}
+
+# --- stop: kill watcher and clean up temp files ---
+cmd_stop() {
+  read_stdin
+  [ -f "$PID_FILE" ] && kill "$(cat "$PID_FILE")" 2>/dev/null || true
+  rm -f "$PID_FILE" "$SESSION_LOG" "$LABEL_FILE" 2>/dev/null || true
+}
+
+# --- dispatch ---
+case "${1:-prompt}" in
+  start)  cmd_start ;;
+  stop)   cmd_stop ;;
+  prompt) cmd_prompt ;;
+  *)      echo "Usage: claude-tab-title [start|stop|prompt]" >&2; exit 1 ;;
+esac
