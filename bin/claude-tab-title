@@ -16,7 +16,7 @@ set -euo pipefail
 #   CLAUDE_TAB_TITLE_MODEL    default: llama3.2
 
 API_URL="${CLAUDE_TAB_TITLE_API_URL:-http://localhost:11434/v1/chat/completions}"
-MODEL="${CLAUDE_TAB_TITLE_MODEL:-llama3.2}"
+MODEL="${CLAUDE_TAB_TITLE_MODEL:-gemma2:9b}"
 
 SESSION_PID="$PPID"
 SESSION_LOG="/tmp/claude-tab-${SESSION_PID}.log"
@@ -77,15 +77,12 @@ cmd_prompt() {
           model: $model,
           messages: [
             {
-              role: "system",
-              content: "Summarize this coding session in 2-4 words. Terse, no punctuation, no quotes. Examples: fixing auth bugs, API migration, new dashboard UI, refactoring tests"
-            },
-            {
               role: "user",
-              content: $context
+              content: ("What is this coding session about? Reply with ONLY a 2-4 word label. One line, no explanation.\n\nGood examples: fixing auth bugs, API migration, new dashboard UI, refactoring tests\n\nSession:\n" + $context)
             }
           ],
-          max_tokens: 20
+          max_tokens: 10,
+          temperature: 0
         }')" \
       | jq -r '.choices[0].message.content // empty' \
       | head -1 \
