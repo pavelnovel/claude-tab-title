@@ -13,7 +13,7 @@ set -euo pipefail
 #
 # Config (env vars):
 #   CLAUDE_TAB_TITLE_API_URL  default: http://localhost:11434/v1/chat/completions
-#   CLAUDE_TAB_TITLE_MODEL    default: llama3.2
+#   CLAUDE_TAB_TITLE_MODEL    default: gemma2:9b
 
 API_URL="${CLAUDE_TAB_TITLE_API_URL:-http://localhost:11434/v1/chat/completions}"
 MODEL="${CLAUDE_TAB_TITLE_MODEL:-gemma2:9b}"
@@ -44,21 +44,36 @@ set_title() {
   [ -n "$tty" ] && printf '\e]0;%s\a' "$title" > "$tty" 2>/dev/null || true
 }
 
+# Strip task notifications, system reminders, XML blocks, and other noise
+sanitize() {
+  sed -E '
+    # Remove any line containing XML-like tags
+    /<[a-zA-Z_\/-][^>]*>/d
+    # Remove HTML comment lines
+    /<!--/d
+    /-->/d
+    # Remove lines that are file paths or URLs
+    /^(https?:\/\/|\/private\/tmp\/|\/Users\/|Read the output file)/d
+    # Remove lines that are just whitespace
+    /^[[:space:]]*$/d
+  ' | head -c 200
+}
+
 # --- prompt: log user prompt and ask LLM for a summary ---
 cmd_prompt() {
   INPUT=$(cat)
 
   TEXT=$(printf '%s' "$INPUT" | jq -r '
     .prompt // .user_prompt // .message // .content // empty
-  ' 2>/dev/null | head -c 500) || true
+  ' 2>/dev/null | sanitize) || true
 
   [ -z "${TEXT:-}" ] && exit 0
 
   echo "$TEXT" >> "$SESSION_LOG"
 
-  # Trim log to last 30 lines once past 50
-  if [ "$(wc -l < "$SESSION_LOG" 2>/dev/null)" -gt 50 ]; then
-    tail -30 "$SESSION_LOG" > "${SESSION_LOG}.tmp"
+  # Trim log to last 20 lines once past 30
+  if [ "$(wc -l < "$SESSION_LOG" 2>/dev/null)" -gt 30 ]; then
+    tail -20 "$SESSION_LOG" > "${SESSION_LOG}.tmp"
     mv "${SESSION_LOG}.tmp" "$SESSION_LOG"
   fi
 
@@ -68,7 +83,7 @@ cmd_prompt() {
   (
     CONTEXT=$(cat "$SESSION_LOG")
 
-    LABEL=$(curl -sf --max-time 5 "$API_URL" \
+    LABEL=$(curl -sf --max-time 8 "$API_URL" \
       -H "Content-Type: application/json" \
       -d "$(jq -n \
         --arg model "$MODEL" \
@@ -77,17 +92,21 @@ cmd_prompt() {
           model: $model,
           messages: [
             {
+              role: "system",
+              content: "You generate short tab titles for coding sessions. Reply with ONLY a 2-4 word label. No quotes, no explanation, no punctuation. Examples: fixing auth bugs, API migration, new dashboard UI, refactoring tests"
+            },
+            {
               role: "user",
-              content: ("What is this coding session about? Reply with ONLY a 2-4 word label. One line, no explanation.\n\nGood examples: fixing auth bugs, API migration, new dashboard UI, refactoring tests\n\nSession:\n" + $context)
+              content: $context
             }
           ],
-          max_tokens: 10,
+          max_tokens: 20,
           temperature: 0
         }')" \
       | jq -r '.choices[0].message.content // empty' \
       | head -1 \
-      | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
-      | cut -c1-30) || true
+      | sed 's/^["[:space:]]*//;s/["[:space:]]*$//' \
+      | cut -c1-40) || true
 
     if [ -n "${LABEL:-}" ]; then
       TITLE="${LABEL} · ${DIR}"

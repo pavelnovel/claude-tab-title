@@ -65,7 +65,7 @@ Set environment variables to use a different LLM backend:
 | Variable | Default | Description |
 |---|---|---|
 | `CLAUDE_TAB_TITLE_API_URL` | `http://localhost:11434/v1/chat/completions` | OpenAI-compatible chat completions endpoint |
-| `CLAUDE_TAB_TITLE_MODEL` | `llama3.2` | Model name |
+| `CLAUDE_TAB_TITLE_MODEL` | `gemma2:9b` | Model name |
 
 ### Examples
 
